@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      display: block;
+    }
+
+    canvas {
+      border: 1px solid #d3d3d3;
+    }
+
+    #gradient {
+      display: block;
+      width: 512px;
+      height: 100px;
+    }
+
+    #gradient-colors {
+      display: flex;
+      justify-content: space-between;
+      width: 512px;
+      margin: 0.5em 0 0.5em 0;
+      --num-colors: 5;
+    }
+
+    #plasma {
+      width: 512px;
+      height: 512px;
+    }
+
+    input.color-choice {
+      width: calc(100% / var(--num-colors));
+      width: 100%;
+      height: 30px;
+      padding: 0;
+      border: none;
+      background: none;
+      outline: none;
+    }
+  </style>
+  </head>
+<body>
+  <div>
+    <canvas id='gradient' width='512' height='100'></canvas>
+  </div>
+  <div id='gradient-colors'>
+    <input type='color' id='color-1' class='color-choice'></input>
+    <input type='color' id='color-2' class='color-choice'></input>
+    <input type='color' id='color-3' class='color-choice'></input>
+    <input type='color' id='color-4' class='color-choice'></input>
+    <input type='color' id='color-5' class='color-choice'></input>
+  </div>
+  <div>
+    <canvas id='plasma' width='512' height='512'></canvas>
+    <br>FPS: <span id='fps'></span>
+  </div>
+
+  <!-- end of html content; only scripting below -->
+
+<script>
+// create a 256-point wrapping color gradient through all specified colors
+//   - colors may be specified as [r,g,b], 0xrrggbb, or '#rrggbb'
+function createGradient(inflectionPts) {
+  function rgbSplit(color) {
+    if (typeof color === 'object') {
+      return color;
+    } else if (typeof color === 'string' && color[0] === '#') {
+      return rgbSplit(parseInt(color.slice(1), 16));
+    } else {
+      return [ color >> 16, (color >> 8) & 0xff, color & 0xff ];
+    }
+  }
+
+  var gradient = new Array(256);
+  var index = 0;
+  for (var pt = 0; pt < inflectionPts.length; ++pt) {
+    var startColor = rgbSplit(inflectionPts[pt]);
+    var endColor = rgbSplit(inflectionPts[(pt + 1) % inflectionPts.length]);
+    var endIndex = gradient.length / inflectionPts.length * (pt + 1);
+    var increment = [
+      (endColor[0] - startColor[0]) / (endIndex - index),
+      (endColor[1] - startColor[1]) / (endIndex - index),
+      (endColor[2] - startColor[2]) / (endIndex - index),
+      ];
+    var color = startColor.slice();
+    for (; index < endIndex; ++index) {
+      gradient[index] = [
+        Math.floor(color[0]),
+        Math.floor(color[1]),
+        Math.floor(color[2])
+        ];
+      color[0] += increment[0];
+      color[1] += increment[1];
+      color[2] += increment[2];
+    }
+  }
+  return gradient;
+}
+
+function showGradient(ctx, gradient) {
+  imgData = ctx.createImageData(gradient.length * 2, ctx.canvas.clientHeight);
+  for (var i = 0; i < imgData.data.length; i += 4) {
+    imgData.data[i] = gradient[i/4 % gradient.length][0];
+    imgData.data[i+1] = gradient[i/4 % gradient.length][1];
+    imgData.data[i+2] = gradient[i/4 % gradient.length][2];
+    imgData.data[i+3] = 255;
+  }
+  ctx.putImageData(imgData, 0, 0);
+}
+
+// x and y are valued in the range -1..1
+function colorValue(x, y, t) {
+  var dx = x + Math.cos(t) * 2;
+  var dy = y + Math.sin(t/1.5) * 1.5;
+  var terms = [
+      //2 * Math.sin(t/5+dx) * (x * Math.cos(t/5) + y * Math.sin(t/7+dx)) + t/2,
+      1.7 * x * Math.sin(t/9+dy) + y * Math.cos(t/6.1+dx) + t/2,
+      2 * x * Math.sin(t/2) + y * Math.cos(t/3) + t,
+      Math.sqrt(Math.sin(dy/1.8) * Math.sin(dy/2) +
+                Math.cos(dx/2.3) * Math.cos(dx/2.3) + 1) + t,
+    ];
+  var summedSines = terms.reduce(function(a, b) { return a + Math.sin(b); }, 0);
+  var index =  summedSines / terms.length * 127 + 128;
+  return gradient[index | 0];
+}
+
+function renderFrame(imgData, t) {
+  var frame = imgData.data;
+  var index = 0;
+  for (var row = 0; row < imgData.height; ++row) {
+    var y = (row / imgData.height * 2) - 1;
+    for (var col = 0; col < imgData.width; ++col) {
+      var x = (col / imgData.width * 2) - 1;
+      var color = colorValue(x, y, t);
+      frame[index++] = color[0];
+      frame[index++] = color[1];
+      frame[index++] = color[2];
+      ++index;  // advance past alpha
+    }
+  }
+}
+
+var defaultInflectionPts = [
+    '#190934',
+    '#fba90a',
+    '#5a18c9',
+    '#d4e4f7',
+    '#236ab9',
+  ];
+var inflectionPts = defaultInflectionPts.slice();
+
+function updateGradient() {
+  for (let i = 1; i <= inflectionPts.length; ++i) {
+    var inp = document.getElementById('color-' + i.toString())
+    inflectionPts[i-1] = inp.value;
+  }
+  gradient = createGradient(inflectionPts);
+  showGradient(document.getElementById('gradient').getContext('2d'), gradient);
+}
+
+for (let i = 1; i <= inflectionPts.length; ++i) {
+  var inp = document.getElementById('color-' + i.toString())
+  inp.value = inflectionPts[i-1];
+  inp.onchange = updateGradient;
+  //inp.oninput = function(event) { console.log('oninput'); }
+}
+
+var gradient;
+updateGradient();
+
+var ctx = document.getElementById('plasma').getContext('2d')
+var frame = ctx.createImageData(ctx.canvas.clientWidth,
+                                ctx.canvas.clientHeight);
+frame.data.fill(255);  // ensure alpha values are all 255
+
+var renderCount = 0;
+var lastRender = 0;
+var time = Math.random() * 1000;
+(function animate(now) {
+    time += (now - lastRender) / 1000;
+    lastRender = now;
+    renderFrame(frame, time);
+    ctx.putImageData(frame, 0, 0);
+    ++renderCount;
+    window.requestAnimationFrame(animate);
+  })(performance.now());
+
+var fpsLabel = document.getElementById('fps');
+var lastFps = performance.now();
+setInterval(function() {
+    var now = performance.now();
+    var fps = renderCount / (now - lastFps) * 10000;
+    fpsLabel.innerText = (Math.round(fps) / 10).toString();
+    renderCount = 0;
+    lastFps = now;
+  }, 1000);
+
+</script>
+</body>
+</html>
+
