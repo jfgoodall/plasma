@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      display: block;
+    }
+
+    canvas {
+      border: 1px solid #d3d3d3;
+    }
+
+    #gradient {
+      display: block;
+      width: 512px;
+      height: 100px;
+    }
+
+    #gradient-colors {
+      display: flex;
+      justify-content: space-between;
+      width: 512px;
+      margin: 0.5em 0 0.5em 0;
+      --num-colors: 5;
+    }
+
+    #plasma {
+      width: 512px;
+      height: 512px;
+    }
+
+    input.color-choice {
+      width: calc(100% / var(--num-colors));
+      width: 100%;
+      height: 30px;
+      padding: 0;
+      border: none;
+      background: none;
+      outline: none;
+    }
+  </style>
+  </head>
+<body>
+  <div>
+    <canvas id='gradient' width='512' height='100'></canvas>
+  </div>
+  <div id='gradient-colors'>
+    <input type='color' id='color-1' class='color-choice'></input>
+    <input type='color' id='color-2' class='color-choice'></input>
+    <input type='color' id='color-3' class='color-choice'></input>
+    <input type='color' id='color-4' class='color-choice'></input>
+    <input type='color' id='color-5' class='color-choice'></input>
+  </div>
+  <div>
+    <canvas id='plasma' width='512' height='512'></canvas>
+    <br>FPS: <span id='fps'></span>
+    <br>RPS: <span id='rps'></span>
+  </div>
+
+  <!-- end of html content; only scripting below -->
+
+<script id='worker' type='text/js-worker'>
+// dedicated worker that does the math in the background
+var width, height;
+var gradient;
+
+// x and y are valued in the range -1..1
+function colorValue(x, y, t) {
+  var dx = x + Math.cos(t) * 2;
+  var dy = y + Math.sin(t/1.5) * 1.5;
+  var terms = [
+      //2 * Math.sin(t/5+dx) * (x * Math.cos(t/5) + y * Math.sin(t/7+dx)) + t/2,
+      1.7 * x * Math.sin(t/9+dy) + y * Math.cos(t/6.1+dx) + t/2,
+      2 * x * Math.sin(t/2) + y * Math.cos(t/3) + t,
+      Math.sqrt(Math.sin(dy/1.8) * Math.sin(dy/2) +
+                Math.cos(dx/2.3) * Math.cos(dx/2.3) + 1) + t,
+    ];
+  var summedSines = terms.reduce(function(a, b) { return a + Math.sin(b); }, 0);
+  var index = summedSines / terms.length * 511.5 + 511.5;
+  return gradient[index | 0];
+}
+
+function renderFrame(buffer, t) {
+  var index = 0;
+  for (var row = 0; row < height; ++row) {
+    var y = (row / height * 2) - 1;
+    for (var col = 0; col < width; ++col) {
+      var x = (col / width * 2) - 1;
+      var color = colorValue(x, y, t);
+      buffer[index++] = color[0];
+      buffer[index++] = color[1];
+      buffer[index++] = color[2];
+      buffer[index++] = 255;
+    }
+  }
+}
+
+var buffer;
+var renderCount = 0;
+var lastRps = performance.now();
+onmessage = function(event) {
+  if (event.data.msg_type === 'dimensions') {
+    width = event.data.msg_value[0];
+    height = event.data.msg_value[1];
+  }
+  else if (event.data.msg_type === 'gradient') {
+    gradient = event.data.msg_value;
+  }
+  else if (event.data.msg_type === 'start') {
+    var lastRender = 0;
+    var time = Math.random() * 1000;
+    (function renderLoop() {
+        var now = performance.now();
+        time += (now - lastRender) / 1000;
+        lastRender = now;
+        buffer = new ArrayBuffer(width * height * 4);
+        renderFrame(new Uint8ClampedArray(buffer), time);
+        ++renderCount;
+        postMessage(buffer, [buffer]);
+        setTimeout(renderLoop, 0);
+      })();
+  }
+  else if (event.data.msg_type === 'get-rps') {
+    var now = performance.now();
+    postMessage(renderCount / (now - lastRps));
+    lastRps = now;
+    renderCount = 0;
+  }
+}
+</script> <!-- end of worker -->
+<script>
+var ctx = document.getElementById('plasma').getContext('2d')
+var fpsLabel = document.getElementById('fps');
+var rpsLabel = document.getElementById('rps');
+var gradient;
+
+var currentFrame;
+var refreshCount = 0;
+(function animate(now) {
+    ++refreshCount;
+    if (currentFrame) {
+      ctx.putImageData(currentFrame, 0, 0);
+    }
+    window.requestAnimationFrame(animate);
+  })(performance.now());
+
+// load worker from script with id='worker'
+var blob = new Blob([document.getElementById('worker').textContent],
+                    {type: 'text/javascript'});
+var worker = new Worker(window.URL.createObjectURL(blob));
+worker.postMessage({ msg_type: 'dimensions',
+                     msg_value: [ ctx.canvas.clientWidth,
+                                  ctx.canvas.clientHeight ]});
+
+worker.onmessage = function(event) {
+  if (typeof event.data === 'object') {
+    currentFrame = new ImageData(new Uint8ClampedArray(event.data),
+                                 ctx.canvas.clientWidth,
+                                 ctx.canvas.clientHeight);
+  } else {
+    rpsLabel.innerText = Math.round(event.data * 10000) / 10;
+  }
+}
+worker.onerror = function(event) {
+  console.error(event);
+}
+
+// create a 256-point wrapping color gradient through all specified colors
+//   - colors may be specified as [r,g,b], 0xrrggbb, or '#rrggbb'
+function createGradient(inflectionPts) {
+  function rgbSplit(color) {
+    if (typeof color === 'object') {
+      return color;
+    } else if (typeof color === 'string' && color[0] === '#') {
+      return rgbSplit(parseInt(color.slice(1), 16));
+    } else {
+      return [ color >> 16, (color >> 8) & 0xff, color & 0xff ];
+    }
+  }
+
+  var gradient = new Array(1024);
+  var index = 0;
+  for (var pt = 0; pt < inflectionPts.length; ++pt) {
+    var startColor = rgbSplit(inflectionPts[pt]);
+    var endColor = rgbSplit(inflectionPts[(pt + 1) % inflectionPts.length]);
+    var endIndex = gradient.length / inflectionPts.length * (pt + 1);
+    var increment = [
+      (endColor[0] - startColor[0]) / (endIndex - index),
+      (endColor[1] - startColor[1]) / (endIndex - index),
+      (endColor[2] - startColor[2]) / (endIndex - index),
+      ];
+    var color = startColor.slice();
+    for (; index < endIndex; ++index) {
+      gradient[index] = [
+        Math.floor(color[0]),
+        Math.floor(color[1]),
+        Math.floor(color[2])
+        ];
+      color[0] += increment[0];
+      color[1] += increment[1];
+      color[2] += increment[2];
+    }
+  }
+  return gradient;
+}
+
+function showGradient(ctx, gradient) {
+  imgData = ctx.createImageData(gradient.length * 2, ctx.canvas.clientHeight);
+  for (var i = 0; i < imgData.data.length; i += 4) {
+    imgData.data[i] = gradient[i/4 % gradient.length][0];
+    imgData.data[i+1] = gradient[i/4 % gradient.length][1];
+    imgData.data[i+2] = gradient[i/4 % gradient.length][2];
+    imgData.data[i+3] = 255;
+  }
+  ctx.putImageData(imgData, 0, 0);
+}
+
+var defaultInflectionPts = [
+    '#190934',
+    '#fba90a',
+    '#5a18c9',
+    '#d4e4f7',
+    '#236ab9',
+  ];
+var inflectionPts = defaultInflectionPts.slice();
+
+function updateGradient() {
+  for (let i = 1; i <= inflectionPts.length; ++i) {
+    var inp = document.getElementById('color-' + i)
+    inflectionPts[i-1] = inp.value;
+  }
+  gradient = createGradient(inflectionPts);
+  showGradient(document.getElementById('gradient').getContext('2d'), gradient);
+  worker.postMessage({ msg_type: 'gradient',
+                       msg_value: gradient });
+}
+
+for (let i = 1; i <= inflectionPts.length; ++i) {
+  var inp = document.getElementById('color-' + i)
+  inp.value = inflectionPts[i-1];
+  inp.onchange = updateGradient;
+  //inp.oninput = function(event) { console.log('oninput'); }
+}
+updateGradient();
+
+worker.postMessage({ msg_type: 'start' });
+
+var lastFps = performance.now();
+setInterval(function() {
+    worker.postMessage({ msg_type: 'get-rps' });
+    var now = performance.now();
+    var fps = refreshCount / (now - lastFps) * 10000;
+    fpsLabel.innerText = Math.round(fps) / 10;
+    refreshCount = 0;
+    lastFps = now;
+  }, 1000);
+
+</script>
+</body>
+</html>
+
