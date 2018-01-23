@@ -42,7 +42,7 @@
   </head>
 <body>
   <div>
-    <canvas id='gradient' width='512' height='100'></canvas>
+    <canvas id='gradient' height='100'></canvas>
   </div>
   <div id='gradient-colors'>
     <input type='color' id='color-1' class='color-choice'></input>
@@ -76,7 +76,7 @@ function colorValue(x, y, t) {
                 Math.cos(dx/2.3) * Math.cos(dx/2.3) + 1) + t,
     ];
   var summedSines = terms.reduce(function(a, b) { return a + Math.sin(b); }, 0);
-  var index = summedSines / terms.length * 511.5 + 511.5;
+  var index = summedSines / terms.length * 1023.5 + 1023.5;
   return gradient[index | 0];
 }
 
@@ -165,7 +165,7 @@ worker.onerror = function(event) {
   console.error(event);
 }
 
-// create a 256-point wrapping color gradient through all specified colors
+// create a wrapping color gradient through all specified colors
 //   - colors may be specified as [r,g,b], 0xrrggbb, or '#rrggbb'
 function createGradient(inflectionPts) {
   function rgbSplit(color) {
@@ -178,7 +178,7 @@ function createGradient(inflectionPts) {
     }
   }
 
-  var gradient = new Array(1024);
+  var gradient = new Array(2048);
   var index = 0;
   for (var pt = 0; pt < inflectionPts.length; ++pt) {
     var startColor = rgbSplit(inflectionPts[pt]);
@@ -205,6 +205,7 @@ function createGradient(inflectionPts) {
 }
 
 function showGradient(ctx, gradient) {
+  document.getElementById('gradient').width = gradient.length * 2;
   imgData = ctx.createImageData(gradient.length * 2, ctx.canvas.clientHeight);
   for (var i = 0; i < imgData.data.length; i += 4) {
     imgData.data[i] = gradient[i/4 % gradient.length][0];
