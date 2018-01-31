@@ -53,6 +53,7 @@
 
 <script id='worker' type='text/js-worker'>
 // dedicated worker that does the math in the background
+'use strict';
 var width, height;
 var gradient;
 
@@ -72,8 +73,9 @@ function colorValue(x, y, t) {
   return gradient[index | 0];
 }
 
+var randSeed = (Math.random() - 0.5) * 10000;
 function renderFrame(buffer, t) {
-  t /= 1000;
+  t = (t + randSeed) / 1000;
   var index = 0;
   for (let row = 0; row < height; ++row) {
     var y = (row / height * 2) - 1;
@@ -88,27 +90,77 @@ function renderFrame(buffer, t) {
   }
 }
 
-var buffer;
+function DoubleBuffer(width, height) {
+  var _active = 0;
+  var _buffers = new Array(2);
+  _buffers[0] = new ArrayBuffer(width * height * 4);
+  _buffers[1] = new ArrayBuffer(width * height * 4);
+  var _count = 2;
+
+  // assign buffer to the non-active slot
+  this.push = function(buffer) {
+    if (_count == 0) {
+      _buffers[_active] = buffer;
+    } else if (_count == 1) {
+      _buffers[_active ^ 1] = buffer;
+    } else if (_count == 2) {
+      throw 'DoubleBuffer overflowed';
+    }
+    ++_count;
+  }
+
+  // return the buffer in the active slot, toggle active slot value
+  this.pop = function() {
+    if (_count == 0) {
+      return null;
+    }
+    --_count;
+    var buff = _buffers[_active];
+    _buffers[_active] = null;
+    _active ^= 1;
+    return buff;
+  }
+}
+
+var doubleBuffer;
+var running = false;
 onmessage = function(event) {
-  if (event.data.msg_type === 'dimensions') {
+  if (event.data instanceof ArrayBuffer) {
+    doubleBuffer.push(event.data);
+  }
+  else if (event.data.msg_type === 'dimensions') {
     width = event.data.msg_value[0];
     height = event.data.msg_value[1];
+    doubleBuffer = new DoubleBuffer(width, height);
   }
   else if (event.data.msg_type === 'gradient') {
     gradient = event.data.msg_value;
   }
   else if (event.data.msg_type === 'start') {
-    (function renderLoop() {
-        buffer = new ArrayBuffer(width * height * 4);
-        renderFrame(new Uint8ClampedArray(buffer), performance.now());
-        postMessage(buffer, [buffer]);
-        setTimeout(renderLoop, 0);
-      })();
+    if (!running) {
+      running = true;
+      (function renderLoop() {
+          var buffer = doubleBuffer.pop();
+          if (buffer) {
+            renderFrame(new Uint8ClampedArray(buffer), performance.now());
+            postMessage(buffer, [buffer]);
+          }
+          if (running) {
+            setTimeout(renderLoop, 0);
+          }
+        })();
+    }
+  }
+  else if (event.data.msg_type === 'stop') {
+    running = false;
   }
 }
 </script> <!-- end of worker -->
 
-<script>
+<script type='text/javascript'>
+'use strict';
+//setInterval(() => { console.warn('Auto-Reloading...'); location.reload(true); }, 60000);
+
 var ctx = document.getElementById('plasma').getContext('2d')
 var inflectionPts = [
     '#190934',
@@ -116,18 +168,9 @@ var inflectionPts = [
     '#5a18c9',
     '#d4e4f7',
     '#236ab9',
+    '#72ff72',
   ];
 var gradient;
-
-var currentFrame;
-var updatedFrame = false;
-(function animate(now) {
-    if (currentFrame && updatedFrame) {
-      ctx.putImageData(currentFrame, 0, 0);
-      updatedFrame = false;
-    }
-    window.requestAnimationFrame(animate);
-  })(performance.now());
 
 // load worker from script with id='worker'
 var blob = new Blob([document.getElementById('worker').textContent],
@@ -138,10 +181,14 @@ worker.postMessage({ msg_type: 'dimensions',
                                   ctx.canvas.clientHeight ]});
 
 worker.onmessage = function(event) {
-  currentFrame = new ImageData(new Uint8ClampedArray(event.data),
-                               ctx.canvas.clientWidth,
-                               ctx.canvas.clientHeight);
-  updatedFrame = true;
+  var buffer = event.data;
+  var currentFrame = new ImageData(new Uint8ClampedArray(buffer),
+                                   ctx.canvas.clientWidth,
+                                   ctx.canvas.clientHeight);
+  window.requestAnimationFrame(function() {
+      ctx.putImageData(currentFrame, 0, 0);
+      worker.postMessage(buffer, [buffer]);
+    });
 }
 worker.onerror = function(event) {
   console.error(event);
@@ -188,7 +235,7 @@ function createGradient(inflectionPts) {
 
 function showGradient(ctx, gradient) {
   document.getElementById('gradient').width = gradient.length * 2;
-  imgData = ctx.createImageData(gradient.length * 2, ctx.canvas.clientHeight);
+  var imgData = ctx.createImageData(gradient.length * 2, ctx.canvas.clientHeight);
   for (let i = 0; i < imgData.data.length; i += 4) {
     imgData.data[i]   = gradient[i/4 % gradient.length][0];
     imgData.data[i+1] = gradient[i/4 % gradient.length][1];
@@ -292,13 +339,15 @@ function updateColorChoices() {
         if (draggedElem === this || sliding) return;
         var elems = Array.from(document.getElementsByClassName('color-choice'));
         var direction = 1;
-        if (draggedElem.style.left < this.style.left) {
+        if (parseFloat(draggedElem.style.left) < parseFloat(this.style.left)) {
           direction = -1;
-          elems = elems.filter(elem => elem.style.left <= this.style.left &&
-                                       elem.style.left > draggedElem.style.left);
+          elems = elems.filter(
+            elem => parseFloat(elem.style.left) <= parseFloat(this.style.left) &&
+                    parseFloat(elem.style.left) > parseFloat(draggedElem.style.left));
         } else {
-          elems = elems.filter(elem => elem.style.left >= this.style.left &&
-                                       elem.style.left < draggedElem.style.left);
+          elems = elems.filter(
+            elem => parseFloat(elem.style.left) >= parseFloat(this.style.left) &&
+                    parseFloat(elem.style.left) < parseFloat(draggedElem.style.left));
         }
         slide([draggedElem], parseFloat(this.style.left) - parseFloat(draggedElem.style.left));
         slide(elems, (elemGap + elemWidth) * direction);
