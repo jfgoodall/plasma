@@ -10,24 +10,25 @@
       border: 1px solid #d3d3d3;
     }
 
-    #gradient {
+    .container {
+      display: flex;
       width: 512px;
+      margin-top: 5px;
+    }
+
+    #gradient {
+      width: 100%;
       height: 2em;
     }
 
     #gradient-colors {
       position: relative;
-      width: 512px;
-      height: 25px;
-      margin: 5px 0 5px 0;
-    }
-
-    .container {
-      display: flex;
+      width: 100%;
+      margin: 0px 5px 0px 5px;
     }
 
     #plasma {
-      width: 512px;
+      width: 100%;
       height: 512px;
     }
 
@@ -38,15 +39,35 @@
       outline: none;
       position: absolute;
     }
+
+    input.add-remove {
+      display: table-cell;
+      vertical-align: middle;
+      height: 25px;
+      border: 1px solid #a7a7a7;
+      border-radius: 10%;
+      outline: none;
+      background-color: white;
+      font-family: "Lucida Console", Monaco, monospace;
+      font-weight: bold;
+    }
+
+    input.add-remove:hover {
+      background-color: #a7a7a7;
+    }
   </style>
   </head>
 <body>
   <div class='container'>
     <canvas id='plasma' width='512' height='512'></canvas>
   </div>
-  <div id='gradient-colors'></div>
   <div class='container'>
     <canvas id='gradient' height='1'></canvas>
+  </div>
+  <div class='container'>
+    <input type="button" class='add-remove' id='add-color' value="+"></input>
+    <div id='gradient-colors'></div>
+    <input type="button" class='add-remove' id='remove-color' value="-"></input>
   </div>
 
   <!-- end of html content; only scripting below -->
@@ -359,6 +380,20 @@ function updateColorChoices() {
   updateGradient();
 }
 updateColorChoices();
+
+document.getElementById('add-color').onclick = function() {
+  var color = '#' +
+    Math.floor(Math.random() * 256).toString(16) +
+    Math.floor(Math.random() * 256).toString(16) +
+    Math.floor(Math.random() * 256).toString(16);
+  inflectionPts.push(color);
+  updateColorChoices();
+}
+
+document.getElementById('remove-color').onclick = function() {
+  inflectionPts.pop();
+  updateColorChoices();
+}
 
 worker.postMessage({ msg_type: 'start' });
 
