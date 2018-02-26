@@ -10,56 +10,212 @@
       border: 1px solid #d3d3d3;
     }
 
-    #gradient {
-      display: block;
+    .container {
+      display: flex;
       width: 512px;
-      height: 100px;
+      margin-top: 5px;
+    }
+
+    #gradient {
+      width: 100%;
+      height: 2em;
     }
 
     #gradient-colors {
-      display: flex;
-      justify-content: space-between;
-      width: 512px;
-      margin: 0.5em 0 0.5em 0;
-      --num-colors: 5;
+      position: relative;
+      width: 100%;
+      margin: 0px 5px 0px 5px;
     }
 
     #plasma {
-      width: 512px;
+      width: 100%;
       height: 512px;
     }
 
     input.color-choice {
-      width: calc(100% / var(--num-colors));
-      width: 100%;
-      height: 30px;
       padding: 0;
       border: none;
       background: none;
       outline: none;
+      position: absolute;
+    }
+
+    input.add-remove {
+      display: table-cell;
+      vertical-align: middle;
+      height: 25px;
+      border: 1px solid #a7a7a7;
+      border-radius: 10%;
+      outline: none;
+      background-color: white;
+      font-family: "Lucida Console", Monaco, monospace;
+      font-weight: bold;
+    }
+
+    input.add-remove:hover {
+      background-color: #a7a7a7;
     }
   </style>
   </head>
 <body>
-  <div>
-    <canvas id='gradient' width='512' height='100'></canvas>
-  </div>
-  <div id='gradient-colors'>
-    <input type='color' id='color-1' class='color-choice'></input>
-    <input type='color' id='color-2' class='color-choice'></input>
-    <input type='color' id='color-3' class='color-choice'></input>
-    <input type='color' id='color-4' class='color-choice'></input>
-    <input type='color' id='color-5' class='color-choice'></input>
-  </div>
-  <div>
+  <div class='container'>
     <canvas id='plasma' width='512' height='512'></canvas>
-    <br>FPS: <span id='fps'></span>
+  </div>
+  <div class='container'>
+    <canvas id='gradient' height='1'></canvas>
+  </div>
+  <div class='container'>
+    <input type="button" class='add-remove' id='add-color' value="+"></input>
+    <div id='gradient-colors'></div>
+    <input type="button" class='add-remove' id='remove-color' value="-"></input>
   </div>
 
   <!-- end of html content; only scripting below -->
 
-<script>
-// create a 256-point wrapping color gradient through all specified colors
+<script id='worker' type='text/js-worker'>
+// dedicated worker that does the math in the background
+'use strict';
+var width, height;
+var gradient;
+
+// x and y are valued in the range -1..1
+function colorValue(x, y, t) {
+  var dx = x + Math.cos(t) * 2;
+  var dy = y + Math.sin(t/1.5) * 1.5;
+  var terms = [
+      //2 * Math.sin(t/5+dx) * (x * Math.cos(t/5) + y * Math.sin(t/7+dx)) + t/2,
+      1.7 * x * Math.sin(t/9+dy) + y * Math.cos(t/6.1+dx) + t/2,
+      2 * x * Math.sin(t/2) + y * Math.cos(t/3) + t,
+      Math.sqrt(Math.sin(dy/1.8) * Math.sin(dy/2) +
+                Math.cos(dx/2.3) * Math.cos(dx/2.3) + 1) + t,
+    ];
+  var summedSines = terms.reduce(function(a, b) { return a + Math.sin(b); }, 0);
+  var index = summedSines / terms.length * 1023.5 + 1023.5;
+  return gradient[index | 0];
+}
+
+var randSeed = (Math.random() - 0.5) * 10000;
+function renderFrame(buffer, t) {
+  t = (t + randSeed) / 1000;
+  var index = 0;
+  for (let row = 0; row < height; ++row) {
+    var y = (row / height * 2) - 1;
+    for (let col = 0; col < width; ++col) {
+      var x = (col / width * 2) - 1;
+      var color = colorValue(x, y, t);
+      buffer[index++] = color[0];
+      buffer[index++] = color[1];
+      buffer[index++] = color[2];
+      buffer[index++] = 255;
+    }
+  }
+}
+
+function DoubleBuffer(width, height) {
+  var _active = 0;
+  var _buffers = new Array(2);
+  _buffers[0] = new ArrayBuffer(width * height * 4);
+  _buffers[1] = new ArrayBuffer(width * height * 4);
+  var _count = 2;
+
+  // assign buffer to the non-active slot
+  this.push = function(buffer) {
+    if (_count == 0) {
+      _buffers[_active] = buffer;
+    } else if (_count == 1) {
+      _buffers[_active ^ 1] = buffer;
+    } else if (_count == 2) {
+      throw 'DoubleBuffer overflowed';
+    }
+    ++_count;
+  }
+
+  // return the buffer in the active slot, toggle active slot value
+  this.pop = function() {
+    if (_count == 0) {
+      return null;
+    }
+    --_count;
+    var buff = _buffers[_active];
+    _buffers[_active] = null;
+    _active ^= 1;
+    return buff;
+  }
+}
+
+var doubleBuffer;
+var running = false;
+onmessage = function(event) {
+  if (event.data instanceof ArrayBuffer) {
+    doubleBuffer.push(event.data);
+  }
+  else if (event.data.msg_type === 'dimensions') {
+    width = event.data.msg_value[0];
+    height = event.data.msg_value[1];
+    doubleBuffer = new DoubleBuffer(width, height);
+  }
+  else if (event.data.msg_type === 'gradient') {
+    gradient = event.data.msg_value;
+  }
+  else if (event.data.msg_type === 'start') {
+    if (!running) {
+      running = true;
+      (function renderLoop() {
+          var buffer = doubleBuffer.pop();
+          if (buffer) {
+            renderFrame(new Uint8ClampedArray(buffer), performance.now());
+            postMessage(buffer, [buffer]);
+          }
+          if (running) {
+            setTimeout(renderLoop, 0);
+          }
+        })();
+    }
+  }
+  else if (event.data.msg_type === 'stop') {
+    running = false;
+  }
+}
+</script> <!-- end of worker -->
+
+<script type='text/javascript'>
+'use strict';
+//setInterval(() => { console.warn('Auto-Reloading...'); location.reload(true); }, 60000);
+
+var ctx = document.getElementById('plasma').getContext('2d')
+var inflectionPts = [
+    '#190934',
+    '#fba90a',
+    '#5a18c9',
+    '#d4e4f7',
+    '#236ab9',
+    '#72ff72',
+  ];
+var gradient;
+
+// load worker from script with id='worker'
+var blob = new Blob([document.getElementById('worker').textContent],
+                    {type: 'text/javascript'});
+var worker = new Worker(window.URL.createObjectURL(blob));
+worker.postMessage({ msg_type: 'dimensions',
+                     msg_value: [ ctx.canvas.clientWidth,
+                                  ctx.canvas.clientHeight ]});
+
+worker.onmessage = function(event) {
+  var buffer = event.data;
+  var currentFrame = new ImageData(new Uint8ClampedArray(buffer),
+                                   ctx.canvas.clientWidth,
+                                   ctx.canvas.clientHeight);
+  window.requestAnimationFrame(function() {
+      ctx.putImageData(currentFrame, 0, 0);
+      worker.postMessage(buffer, [buffer]);
+    });
+}
+worker.onerror = function(event) {
+  console.error(event);
+}
+
+// create a wrapping color gradient through all specified colors
 //   - colors may be specified as [r,g,b], 0xrrggbb, or '#rrggbb'
 function createGradient(inflectionPts) {
   function rgbSplit(color) {
@@ -72,9 +228,9 @@ function createGradient(inflectionPts) {
     }
   }
 
-  var gradient = new Array(256);
+  var gradient = new Array(2048);
   var index = 0;
-  for (var pt = 0; pt < inflectionPts.length; ++pt) {
+  for (let pt = 0; pt < inflectionPts.length; ++pt) {
     var startColor = rgbSplit(inflectionPts[pt]);
     var endColor = rgbSplit(inflectionPts[(pt + 1) % inflectionPts.length]);
     var endIndex = gradient.length / inflectionPts.length * (pt + 1);
@@ -99,9 +255,10 @@ function createGradient(inflectionPts) {
 }
 
 function showGradient(ctx, gradient) {
-  imgData = ctx.createImageData(gradient.length * 2, ctx.canvas.clientHeight);
-  for (var i = 0; i < imgData.data.length; i += 4) {
-    imgData.data[i] = gradient[i/4 % gradient.length][0];
+  document.getElementById('gradient').width = gradient.length * 2;
+  var imgData = ctx.createImageData(gradient.length * 2, ctx.canvas.clientHeight);
+  for (let i = 0; i < imgData.data.length; i += 4) {
+    imgData.data[i]   = gradient[i/4 % gradient.length][0];
     imgData.data[i+1] = gradient[i/4 % gradient.length][1];
     imgData.data[i+2] = gradient[i/4 % gradient.length][2];
     imgData.data[i+3] = 255;
@@ -109,92 +266,136 @@ function showGradient(ctx, gradient) {
   ctx.putImageData(imgData, 0, 0);
 }
 
-// x and y are valued in the range -1..1
-function colorValue(x, y, t) {
-  var dx = x + Math.cos(t) * 2;
-  var dy = y + Math.sin(t/1.5) * 1.5;
-  var terms = [
-      //2 * Math.sin(t/5+dx) * (x * Math.cos(t/5) + y * Math.sin(t/7+dx)) + t/2,
-      1.7 * x * Math.sin(t/9+dy) + y * Math.cos(t/6.1+dx) + t/2,
-      2 * x * Math.sin(t/2) + y * Math.cos(t/3) + t,
-      Math.sqrt(Math.sin(dy/1.8) * Math.sin(dy/2) +
-                Math.cos(dx/2.3) * Math.cos(dx/2.3) + 1) + t,
-    ];
-  var summedSines = terms.reduce(function(a, b) { return a + Math.sin(b); }, 0);
-  var index =  summedSines / terms.length * 127 + 128;
-  return gradient[index | 0];
-}
-
-function renderFrame(imgData, t) {
-  var frame = imgData.data;
-  var index = 0;
-  for (var row = 0; row < imgData.height; ++row) {
-    var y = (row / imgData.height * 2) - 1;
-    for (var col = 0; col < imgData.width; ++col) {
-      var x = (col / imgData.width * 2) - 1;
-      var color = colorValue(x, y, t);
-      frame[index++] = color[0];
-      frame[index++] = color[1];
-      frame[index++] = color[2];
-      ++index;  // advance past alpha
-    }
-  }
-}
-
-var defaultInflectionPts = [
-    '#190934',
-    '#fba90a',
-    '#5a18c9',
-    '#d4e4f7',
-    '#236ab9',
-  ];
-var inflectionPts = defaultInflectionPts.slice();
-
 function updateGradient() {
-  for (let i = 1; i <= inflectionPts.length; ++i) {
-    var inp = document.getElementById('color-' + i.toString())
-    inflectionPts[i-1] = inp.value;
+  // use the colors from left to right, not the order they were added to the
+  // container div
+  var colors = Array.from(document.getElementsByClassName('color-choice'));
+  colors.sort(function(a, b) {
+      return parseFloat(a.style.left) - parseFloat(b.style.left);
+    });
+
+  inflectionPts = [];
+  for (let i = 0; i < colors.length; ++i) {
+    inflectionPts.push(colors[i].value);
   }
   gradient = createGradient(inflectionPts);
   showGradient(document.getElementById('gradient').getContext('2d'), gradient);
+  worker.postMessage({ msg_type: 'gradient',
+                       msg_value: gradient });
 }
 
-for (let i = 1; i <= inflectionPts.length; ++i) {
-  var inp = document.getElementById('color-' + i.toString())
-  inp.value = inflectionPts[i-1];
-  inp.onchange = updateGradient;
-  //inp.oninput = function(event) { console.log('oninput'); }
+var sliding = false;
+function slide(elements, offset, duration=150) {
+  sliding = true;
+  var startingPos = [];
+  var startingTime = performance.now();
+  for (let i = 0; i < elements.length; ++i) {
+    startingPos.push(parseFloat(elements[i].style.left));
+  }
+
+  // symmetric trapezoidal velocity profile; acceleration periods consist of
+  // first and last quarter of duration with middle half having constant
+  // velocity; time and distance are inputs, solve for max velocity
+  var V = (4 / 3) * (offset / duration);
+  var T = duration;
+
+  (function animate(now) {
+      var t = now - startingTime;
+
+      var shift = offset;
+      if (t < duration) {
+        if (t <= duration * 0.25) {
+          shift = 2 * t * t * V / T;
+        } else if (t <= duration * 0.75) {
+          shift = V * ((t - T * 0.25) + (0.125 * T));
+        } else {
+          shift = (0.125 * V * T) - ((T - t) * (4 * (T - t) * V / T) * 0.5) + 0.625 * V * T;
+        }
+      }
+
+      for (let i = 0; i < elements.length; ++i) {
+        // apply a shift from the starting position to avoid accumulating errors
+        elements[i].style.left = (startingPos[i] + shift) + 'px';
+      }
+
+      if (Math.abs(shift) < Math.abs(offset)) {
+        requestAnimationFrame(animate);
+      } else {
+        updateGradient();
+        sliding = false;
+      }
+    })(performance.now());
 }
 
-var gradient;
-updateGradient();
+function updateColorChoices() {
+  var container = document.getElementById('gradient-colors');
+  while (container.hasChildNodes()) {
+    container.removeChild(container.lastChild);
+  }
 
-var ctx = document.getElementById('plasma').getContext('2d')
-var frame = ctx.createImageData(ctx.canvas.clientWidth,
-                                ctx.canvas.clientHeight);
-frame.data.fill(255);  // ensure alpha values are all 255
+  var elemHeight = container.clientHeight;
+  var elemGap = elemHeight / 4;
+  var elemWidth = (container.clientWidth - elemGap * (inflectionPts.length - 1))
+                   / inflectionPts.length;
+  var draggedElem; // used in listeners
+  for (let i = 0; i < inflectionPts.length; ++i) {
+    var inp = document.createElement('input');
+    inp.setAttribute('class', 'color-choice');
+    inp.setAttribute('id', 'color-' + i);
+    inp.setAttribute('type', 'color');
+    inp.setAttribute('draggable', 'true');
+    inp.setAttribute('value', inflectionPts[i]);
+    inp.addEventListener('change', updateGradient);
+    inp.addEventListener('input', updateGradient);
+    inp.style.height = elemHeight + 'px';
+    inp.style.width = Math.round(elemWidth) + 'px';
+    inp.style.left = Math.round((elemWidth + elemGap) * i) + 'px';
+    container.append(inp);
 
-var renderCount = 0;
-var lastRender = 0;
-var time = Math.random() * 1000;
-(function animate(now) {
-    time += (now - lastRender) / 1000;
-    lastRender = now;
-    renderFrame(frame, time);
-    ctx.putImageData(frame, 0, 0);
-    ++renderCount;
-    window.requestAnimationFrame(animate);
-  })(performance.now());
+    inp.addEventListener('dragstart', function(event) {
+        draggedElem = this;
+      });
+    inp.addEventListener('dragenter', function(event) {
+        event.preventDefault();
+        if (draggedElem === this || sliding) return;
+        var elems = Array.from(document.getElementsByClassName('color-choice'));
+        var direction = 1;
+        if (parseFloat(draggedElem.style.left) < parseFloat(this.style.left)) {
+          direction = -1;
+          elems = elems.filter(
+            elem => parseFloat(elem.style.left) <= parseFloat(this.style.left) &&
+                    parseFloat(elem.style.left) > parseFloat(draggedElem.style.left));
+        } else {
+          elems = elems.filter(
+            elem => parseFloat(elem.style.left) >= parseFloat(this.style.left) &&
+                    parseFloat(elem.style.left) < parseFloat(draggedElem.style.left));
+        }
+        slide([draggedElem], parseFloat(this.style.left) - parseFloat(draggedElem.style.left));
+        slide(elems, (elemGap + elemWidth) * direction);
+      });
+    inp.addEventListener('dragover', function(event) {
+        event.preventDefault();
+      });
+  }
+  updateGradient();
+}
+updateColorChoices();
 
-var fpsLabel = document.getElementById('fps');
-var lastFps = performance.now();
-setInterval(function() {
-    var now = performance.now();
-    var fps = renderCount / (now - lastFps) * 10000;
-    fpsLabel.innerText = (Math.round(fps) / 10).toString();
-    renderCount = 0;
-    lastFps = now;
-  }, 1000);
+document.getElementById('add-color').onclick = function() {
+  var color = '#' +
+    Math.floor(Math.random() * 256).toString(16) +
+    Math.floor(Math.random() * 256).toString(16) +
+    Math.floor(Math.random() * 256).toString(16);
+  inflectionPts.push(color);
+  updateColorChoices();
+}
+
+document.getElementById('remove-color').onclick = function() {
+  inflectionPts.pop();
+  updateColorChoices();
+}
+
+worker.postMessage({ msg_type: 'start' });
 
 </script>
 </body>
