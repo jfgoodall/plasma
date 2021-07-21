@@ -455,7 +455,6 @@ document.getElementById('add-color').onclick = function() {
 
     // ensure we pick a contrasting color
     var diff = deltaE(rgb2lab(newColor), rgb2lab(endColor));
-    console.log(diff);
   } while (diff < 50);
 
   var color = '#' + newColor[0].toString(16) +
